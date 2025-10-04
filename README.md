@@ -12,3 +12,5 @@ liver_disease_report-Sibs-Oct25.Rmd: Project report in .rmd format
 liver_disease_report-Sibs-Oct25.pdf: Project report in .pdf format
 
 india-liver-disease-Sibs-Oct25.R: R-Script that generates the data analysis
+
+indian_liver_patient.csv: Dataset from Kaggle
