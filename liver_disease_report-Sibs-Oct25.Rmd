@@ -1,0 +1,307 @@
+---
+title: "Predicting Liver Disease in Indian Patients: A Comparative Machine Learning Study"
+author: "Sibashish"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+---
+
+\newpage
+
+# 1. Introduction
+
+Liver disease is a major health concern in India. 
+The Indian Liver Patient Records dataset contains clinical and demographic information for 583 patients, including features such as age, gender, serum bilirubin levels, and more. 
+The target variable indicates whether a patient has liver disease (1) or is healthy (2). My objective is to build predictive models that can classify patients as having liver disease or not, based on these features.
+
+
+# 2. Executive Summary
+
+This report attempts to analyze the Indian Liver Patient Records dataset to predict liver disease using supervised machine learning algorithms. It is through comparison of Logistic Regression, Random Forest, and Support Vector Machine (SVM) classifiers. The workflow covers data cleaning, exploration, modeling, and evaluation, with visualizations and a summary table of model performance.
+
+\newpage
+# 3. Methods and Analysis
+## 3.1 Data Loading and Cleaning
+The dataset is automatically downloaded from GitHub since/if it is not already present locally.
+Missing values in numeric columns are replaced with the median value, while missing values in categorical columns are replaced with the most common value (mode). This approach helps retain as much data as possible and avoids bias that could result from simply removing records with missing entries.
+
+```{r data-loading, echo=TRUE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width=7, fig.height=4)
+packages <- c("tidyverse", "caret", "randomForest", "e1071", "ROSE", "pROC")
+installed <- packages %in% rownames(installed.packages())
+if (any(!installed)) install.packages(packages[!installed])
+invisible(lapply(packages, library, character.only = TRUE))
+
+# Mode function for categorical imputation
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Download data if not present
+url <- "https://raw.githubusercontent.com/bizysiby/DS_India_liver_patients/main/indian_liver_patient.csv"
+destfile <- "indian_liver_patient.csv"
+if (!file.exists(destfile)) {
+  download.file(url, destfile, method = "libcurl")
+}
+data <- read.csv(destfile)
+
+# Input missing values
+for (col in names(data)) {
+  if (any(is.na(data[[col]]))) {
+    if (is.numeric(data[[col]])) {
+      data[[col]][is.na(data[[col]])] <- median(data[[col]], na.rm = TRUE)
+    } else {
+      data[[col]][is.na(data[[col]])] <- Mode(data[[col]])
+    }
+  }
+}
+data$Gender <- as.factor(data$Gender)
+data$Dataset <- factor(ifelse(data$Dataset == 1, "LiverPatient", "Healthy"))
+```
+
+\newpage
+## 3.2 Data Exploration and Visualization
+Summary statistics and visualizations help understand the data distribution and relationships.
+
+```{r summary, echo=FALSE}
+summary(data)
+```
+
+\newpage
+# 4. Results
+## 4.1 Age distribution
+This plot shows the distribution of patient ages in the dataset. It helps us understand the age range and any patterns that may exist, such as whether liver disease is more common in certain age groups.
+
+```{r age-histogram, echo=FALSE}
+p <- ggplot(data, aes(x = Age)) + 
+  geom_histogram(binwidth = 5, fill = "steelblue") + 
+  theme_minimal() +
+  labs(title = "Age Distribution")
+print(p)
+```
+
+\newpage
+
+## 4.2 Total Bilirubin by Diagnosis
+This boxplot compares total bilirubin levels between patients diagnosed with liver disease and healthy individuals.  
+Total bilirubin is an important indicator of liver function, and differences between groups may highlight key risk factors.
+
+```{r bilirubin-boxplot, echo=FALSE}
+q <- ggplot(data, aes(x = Dataset, y = Total_Bilirubin, fill = Dataset)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Total Bilirubin by Diagnosis")
+print(q)
+```
+
+\newpage
+
+## 4.3 Class Distribution
+This bar chart illustrates the number of patients in each diagnostic category (LiverPatient vs. Healthy).  
+It highlights any imbalance in the dataset, which is important for modeling and evaluation.
+
+```{r class-balance, echo=FALSE}
+r <- ggplot(data, aes(x = Dataset, fill = Dataset)) +
+  geom_bar() +
+  theme_minimal() +
+  labs(title = "Class Distribution")
+print(r)
+```
+
+\newpage
+
+# 5. Insight
+There is a class imbalance, with more patients diagnosed with liver disease than healthy individuals. To avoid bias in model training, ROSE package was used to balance the dataset.
+
+```{r balancing}
+data_balanced <- ROSE(Dataset ~ ., data = data, seed = 1)$data
+table(data_balanced$Dataset)
+```
+
+\newpage
+# 6. Train/Test Split
+Use an 80/20 train/test split. This choice balances the need for sufficient training data with robust testing. A 50/50 split would reduce model accuracy, while 90/10 could lead to unreliable test results.
+
+```{r split}
+set.seed(123)
+trainIndex <- createDataPartition(data_balanced$Dataset, p = 0.8, list = FALSE)
+train <- data_balanced[trainIndex, ]
+test <- data_balanced[-trainIndex, ]
+```
+
+```{r check-train}
+str(train)
+```
+
+\newpage
+# 7. Feature Scaling for SVM
+SVMs require scaled features for optimal performance.
+
+```{r scaling}
+scaling_vars <- setdiff(names(train), c("Gender", "Dataset"))
+preProc <- preProcess(train[, scaling_vars], method = c("center", "scale"))
+train_scaled <- train
+test_scaled <- test
+train_scaled[, scaling_vars] <- predict(preProc, train[, scaling_vars])
+test_scaled[, scaling_vars] <- predict(preProc, test[, scaling_vars])
+```
+
+
+\newpage
+# 8. Modeling Approach
+Approach is to compare three models:
+
+- **Logistic Regression:** - A baseline linear model.
+- **Random Forest:** - A tree-based ensemble model, robust to nonlinearity and interactions.
+- **Support Vector Machine (SVM):** - A more advanced model, effective for complex decision boundaries.
+
+All models use 5-fold cross-validation for robust performance estimation.
+
+\newpage
+## 8.1 Logistic Regression
+Logistic Regression is used as a baseline linear model for classification.  
+It estimates the probability of a patient having liver disease based on clinical features.  
+The output includes a confusion matrix and the area under the ROC curve (AUC), which help assess the model's accuracy and ability to distinguish between classes.
+
+```{r logistic-regression}
+set.seed(123)
+log_model <- train(Dataset ~ ., data = train, method = "glm", family = "binomial", trControl = trainControl(method = "cv", number = 5, classProbs = TRUE))
+log_pred <- predict(log_model, test)
+log_prob <- predict(log_model, test, type = "prob")[,2]
+log_cm <- confusionMatrix(log_pred, test$Dataset)
+log_roc <- roc(response = test$Dataset, predictor = log_prob, levels = rev(levels(test$Dataset)))
+log_cm
+auc(log_roc)
+```
+
+\newpage
+## 8.2 Random Forest
+Random Forest is a tree-based ensemble method that can capture nonlinear relationships and interactions between variables.
+It often performs well on complex datasets.  
+The output includes model performance metrics and a plot showing the importance of each feature in predicting liver disease.
+
+```{r random-forest}
+set.seed(123)
+rf_grid <- expand.grid(mtry = c(2, 4, 6))
+rf_model <- train(Dataset ~ ., data = train, method = "rf", trControl = trainControl(method = "cv", number = 5, classProbs = TRUE), tuneGrid = rf_grid)
+rf_pred <- predict(rf_model, test)
+rf_prob <- predict(rf_model, test, type = "prob")[,2]
+rf_cm <- confusionMatrix(rf_pred, test$Dataset)
+rf_roc <- roc(response = test$Dataset, predictor = rf_prob, levels = rev(levels(test$Dataset)))
+rf_cm
+auc(rf_roc)
+varImpPlot(rf_model$finalModel, main = "Random Forest Feature Importance")
+```
+
+\newpage
+## 8.3 Support Vector Machine (SVM)
+SVM is an advanced algorithm that finds the optimal boundary for separating classes.  
+It is especially effective when decision boundaries are complex.  
+Performance metrics and ROC curves are used to evaluate its effectiveness.
+
+```{r support-vector-machine}
+svm_trctrl <- trainControl(method = "cv", number = 5, classProbs = TRUE, savePredictions = TRUE)
+set.seed(123)
+svm_model <- train(Dataset ~ ., data = train_scaled, method = "svmRadial",
+                   trControl = svm_trctrl, tuneLength = 3)
+svm_pred <- predict(svm_model, test_scaled)
+
+# Try to get probabilities; use fallback if not available
+svm_prob <- tryCatch({
+    predict(svm_model, test_scaled, type = "prob")[,2]
+  }, error = function(e) {
+    as.numeric(svm_pred == "LiverPatient")
+  })
+svm_cm <- confusionMatrix(svm_pred, test_scaled$Dataset)
+svm_roc <- roc(response = test_scaled$Dataset, predictor = svm_prob, levels = rev(levels(test_scaled$Dataset)))
+svm_cm
+auc(svm_roc)
+```
+
+\newpage
+# 9. Model Comparison
+To assess which model performs best, compare their accuracy, sensitivity, specificity, and AUC (Area Under the Curve) values. ROC curves for each model are plotted together for visual comparison.
+
+In this analysis:
+- **Random Forest model:** Achieved the highest scores across most metrics, indicating strong ability to correctly classify both liver disease and healthy cases. Feature importance analysis (from Random Forest) indicated that variables such as Total Bilirubin, Direct Bilirubin, and Alamine Aminotransferase are among the most influential predictors for liver disease.
+
+- **SVM model:** Performed well, particularly in terms of overall accuracy and AUC, though its sensitivity was somewhat lower than Random Forest.
+
+- **Logistic Regression**: Also served as a baseline and showed lower performance, especially in sensitivity and AUC, suggesting that linear models may not capture the complexity of this dataset as effectively as ensemble or nonlinear approaches.
+
+The ROC curves for all three models are shown below, providing a visual comparison of their classification performance.
+
+```{r roc-plot, echo=FALSE}
+plot(log_roc, col = "blue", main = "ROC Curves")
+plot(rf_roc, col = "red", add = TRUE)
+plot(svm_roc, col = "green", add = TRUE)
+legend("bottomright", legend = c("Logistic Regression", "Random Forest", "SVM"),
+       col = c("blue", "red", "green"), lwd = 2)
+```
+
+```{r check-model-objects}
+ls()
+```
+
+\newpage
+# 10. Model Comparison table
+The table below summarizes the key performance metrics for each model:
+
+- **Accuracy:** The percentage of correct predictions out of all cases.
+- **Sensitivity:** The proportion of actual liver disease cases correctly identified (true positive rate).
+- **Specificity:** The proportion of healthy cases correctly identified (true negative rate).
+- **AUC:** Measures the model's ability to distinguish between classes; higher values indicate better discrimination.
+
+**How to interpret:**  
+A model with higher accuracy, sensitivity, specificity, and AUC is considered better for this classification task.  
+
+
+```{r results-table}
+log_acc <- log_cm$overall["Accuracy"]
+log_sens <- log_cm$byClass["Sensitivity"]
+log_spec <- log_cm$byClass["Specificity"]
+log_auc <- as.numeric(auc(log_roc))
+
+rf_acc <- rf_cm$overall["Accuracy"]
+rf_sens <- rf_cm$byClass["Sensitivity"]
+rf_spec <- rf_cm$byClass["Specificity"]
+rf_auc <- as.numeric(auc(rf_roc))
+
+svm_acc <- svm_cm$overall["Accuracy"]
+svm_sens <- svm_cm$byClass["Sensitivity"]
+svm_spec <- svm_cm$byClass["Specificity"]
+svm_auc <- as.numeric(auc(svm_roc))
+
+results_table <- data.frame(
+  Model = c("Logistic Regression", "Random Forest", "SVM"),
+  Accuracy = c(log_acc, rf_acc, svm_acc),
+  Sensitivity = c(log_sens, rf_sens, svm_sens),
+  Specificity = c(log_spec, rf_spec, svm_spec),
+  AUC = c(log_auc, rf_auc, svm_auc)
+)
+
+results_table_rounded <- results_table
+results_table_rounded[, -1] <- round(results_table_rounded[, -1], 3)
+knitr::kable(results_table_rounded, caption = "Summary of Model Performance")
+```
+
+\newpage
+# 11. Results
+All three models performed well. The Random Forest model achieved the highest accuracy and AUC, indicating it is best suited for this classification task. Feature importance analysis revealed that Total_Bilirubin, Direct_Bilirubin, and Alamine_Aminotransferase are key predictors.
+
+
+# 12. Conclusion
+I built and compared three machine learning models for predicting liver disease using clinical data. Random Forest outperformed Logistic Regression and SVM, likely due to its ability to capture nonlinear relationships and interactions. Limitations include the relatively small dataset and potential for overfitting. Future work could explore more advanced models, additional features, or external validation.
+
+
+# 13. References
+* HarvardX PH125.9x: Capstone Project, edX Course
+* Indian Liver Patient Records Dataset, Kaggle
+* R Documentation for caret, randomForest, e1071, ROSE, pROC
+* OpenAI ChatGPT (GPT-4, June 2024), for project guidance and report drafting
+
+# 14. Note & Thanks
+Do note that I am extremely new to programming (I am a Business Analyst by profession), so kept it simple and honestly used guidance as exhibited in references. Thank you so much for your patience.
